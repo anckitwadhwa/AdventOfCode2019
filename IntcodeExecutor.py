@@ -5,25 +5,23 @@ import time
 import math
 
 class IntcodeExecutor:
-    def __init__(self, instruction_sequence, input_queue = None, output_queue = None, io_interpreter = None, debug_prints = False):
+    def __init__(self, instruction_sequence, io_handler = None, debug_prints = False):
 
         self.relative_base = 0
         self.instruction_pointer = 0
         self.halted = False
         self.instructions_attempted = 0
         
-        if(isinstance(io_interpreter, IOInterpreter) == True):
-            self.io_interpreter = io_interpreter
+        self.instruction_sequence = instruction_sequence
+        
+        if(isinstance(io_handler, IOHandler)):
+            self.io_handler = io_handler
             
         else:
-            self.io_interpreter = IOInterpreter()
+            self.io_handler = IOHandler(None, None, debug_prints)
             
-        self.instruction_sequence = instruction_sequence
-        self.input_queue = input_queue
-        self.output_queue = output_queue
-
+        
         self.thread = threading.Thread(name="executor", target=self.__run_instructions, args=([debug_prints]))
-
         self.thread.start()
         
     def __del__(self, debug_prints = False):       
@@ -208,20 +206,9 @@ class IntcodeExecutor:
 
         result_position = self.__get_result_position(1, modes)
         result = 0
-
-        if (self.input_queue != None):
-            #wait for element to be added to the queue
-            while (not(self.is_halted()) and (len(self.input_queue) < 1)):
-                if (debug_prints):
-                    print(f'sleeping in {threading.current_thread().name}')
-                time.sleep (0.001)
-
-            if(not(self.is_halted())):
-                result = self.input_queue.popleft()
-        else:
-            result = input ("Enter Input:")
-
-        result = self.io_interpreter.interpret_input(result, debug_prints)
+        
+        if(not(self.is_halted())):
+            result = self.io_handler.get_input(debug_prints)
         
         self.instruction_sequence[result_position] = int(result)
 
@@ -232,14 +219,7 @@ class IntcodeExecutor:
 
     def __handle_opcode_4(self, modes, debug_prints = False):
         operand1 = self.__get_operand(1, modes)
-        
-        operand1 = self.io_interpreter.interpret_output(operand1)
-
-        if (self.output_queue != None):
-            self.output_queue.append(operand1)
-
-        else:
-            print(operand1, end = "")
+        self.io_handler.provide_output(operand1, debug_prints)
 
         if (debug_prints):
             print(f'Output:{operand1}')
@@ -319,17 +299,45 @@ class IntcodeExecutor:
         self.__increment_instruction_pointer(2)
         
 
-class IOInterpreter:
-    def interpret_input(self, input_str, debug_prints = False):
-        return input_str
+class IOHandler:
+    def __init__(self, input_queue = None, output_queue = None, debug_prints = False):
+    
+        self.input_queue = input_queue
+        self.output_queue = output_queue
         
-    def interpret_output(self, output_str, debug_prints = False):
-        return output_str
-        
-class ASCIIInterpretor(IOInterpreter):
+    def get_input(self, debug_prints = False):
+    
+        input_val = 0
+        if (self.input_queue != None):
+            #wait for element to be added to the queue
+            while (len(self.input_queue) < 1):
+                if (debug_prints):
+                    print(f'sleeping in {threading.current_thread().name}')
+                time.sleep (0.001)
 
-    def interpret_input(self, input_char, debug_prints = False):
-        return_val = 0
+            input_val = self.input_queue.popleft()
+            
+        else:
+            input_val = input ("Enter Input:")
+
+    
+        return input_val
+        
+    def provide_output(self, output_str, debug_prints = False):
+    
+        if (self.output_queue != None):
+            self.output_queue.append(output_str)
+
+        else:
+            print(output_str, end = "")
+
+class ASCIIIOHandler(IOHandler):
+
+    def __init__(self, input_queue = None, output_queue = None, debug_prints = False):
+        super(ASCIIIOHandler, self).__init__(input_queue, output_queue, debug_prints)
+
+    def get_input(self, debug_prints = False):
+        input_char = super(ASCIIIOHandler, self).get_input(debug_prints)
     
         if(input_char == ""):
             return_val = ord("\n")
@@ -341,10 +349,70 @@ class ASCIIInterpretor(IOInterpreter):
     
         return(return_val)
         
-    def interpret_output(self, output_int, debug_prints = False):
+    def provide_output(self, output_int, debug_prints = False):
 
         MAX_ASCII_INT = 128
+        output_str = ""
+        
         if(output_int < MAX_ASCII_INT):
-            return(chr(output_int))
+            output_str = chr(output_int)
         else:
-            return(output_int)
+            output_str = str(output_int)
+        
+        super(ASCIIIOHandler, self).provide_output(output_str, debug_prints)
+
+class NetworkIOHandler(IOHandler):
+    PACKET_LENGTH = 3
+
+    def __init__(self, input_queue = None, output_queue = None, debug_prints = False):
+        super(NetworkIOHandler, self).__init__(input_queue, output_queue, debug_prints)
+        
+        self.output_ready_elements = []
+        self.received_elements = []
+        
+    def get_input(self, debug_prints = False):
+        input_val = -1
+        if (self.input_queue != None):
+        
+            if(len(self.received_elements) > 0):
+                input_val = self.received_elements.pop()
+                
+            elif (len(self.input_queue) > 0):
+            
+                input_tuple = self.input_queue.popleft()
+                
+                x_val = input_tuple[0]
+                y_val = input_tuple[1]
+                
+                input_val = x_val
+                if(y_val != -1):
+                    self.received_elements.append(input_tuple[1])
+                
+            else:
+                input_val = -1
+            
+        else:
+            input_val = input ("Enter Input:")
+            
+        return(input_val)
+
+    
+    def provide_output(self, output_str, debug_prints = False):
+    
+        output_ready_elements = self.output_ready_elements
+    
+        output_ready_elements.append(output_str)
+        if(len(output_ready_elements) >= self.PACKET_LENGTH):
+        
+            packet_address = output_ready_elements[0]
+            x_value = output_ready_elements[1]
+            y_value = output_ready_elements[2]
+            
+            output_ready_elements.clear()
+        
+            if (self.output_queue != None):
+                
+                self.output_queue.append((packet_address, x_value, y_value))
+
+            else:
+                print((packet_address, x_value, y_value), end = "")
